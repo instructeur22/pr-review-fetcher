@@ -3,6 +3,11 @@ name: PR Review Loop (Reusable)
 on:
   workflow_call:
     inputs:
+      pr_number:
+        description: 'Numéro de PR explicite (optionnel si dans un contexte PR)'
+        required: false
+        type: string
+        default: ''
       enable_summary:
         description: 'Activer la publication du commentaire de synthèse des revues'
         required: false
@@ -45,6 +50,7 @@ jobs:
         id: fetcher
         uses: instructeur22/pr-review-fetcher@main
         with:
+          pr-number: ${{ inputs.pr_number }}
           token: ${{ secrets.GITHUB_TOKEN }}
           format: agent
           output-path: pr-reviews.xml
