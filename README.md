@@ -95,6 +95,17 @@ Exemple de structure XML :
 
 ---
 
+## Automatisation GitHub Actions & Agent Gemini
+
+`pr-review-fetcher` peut être directement intégré dans vos dépôts GitHub via :
+1. **GitHub Composite Action** : `uses: instructeur22/pr-review-fetcher@main`
+2. **Workflow réutilisable** : `.github/workflows/review-loop.yml` (Synthèse niveau 1 + Correction Gemini sur commande `/fix-reviews` niveau 2).
+3. **Instructions Gemini** : [`GEMINI.md`](GEMINI.md) pour encadrer le modèle sur la sécurité, le minimalisme et la non-régression.
+
+Consultez le [Guide complet d'automatisation](docs/automation/index.md) pour les détails de mise en place.
+
+---
+
 ## Développement
 
 ```bash

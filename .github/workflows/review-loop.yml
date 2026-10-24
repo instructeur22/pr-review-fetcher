@@ -1,0 +1,267 @@
+name: PR Review Loop (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      enable_summary:
+        description: 'Activer la publication du commentaire de synthèse des revues'
+        required: false
+        type: boolean
+        default: true
+      enable_fix_command:
+        description: 'Activer la résolution automatique via commande /fix-reviews'
+        required: false
+        type: boolean
+        default: true
+      gemini_model:
+        description: 'Modèle Gemini pour la résolution (ex: gemini-2.5-flash)'
+        required: false
+        type: string
+        default: 'gemini-2.5-flash'
+    secrets:
+      GEMINI_API_KEY:
+        description: 'Clé API Google Gemini pour la résolution automatique'
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  summary:
+    name: Synthèse des Revues (Niveau 1)
+    if: inputs.enable_summary && (github.event_name == 'pull_request_review' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'summary' || inputs.mode == '')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Extraire les revues avec pr-review-fetcher
+        id: fetcher
+        uses: instructeur22/pr-review-fetcher@main
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          format: agent
+          output-path: pr-reviews.xml
+
+      - name: Publier / Mettre à jour la synthèse sur la PR
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          XML_PATH: pr-reviews.xml
+          COMMENTS_COUNT: ${{ steps.fetcher.outputs.comments-count }}
+        with:
+          script: |
+            const fs = require('fs');
+            const prNumber = context.payload.pull_request ? context.payload.pull_request.number : (context.payload.issue ? context.payload.issue.number : null);
+            if (!prNumber) {
+              console.log('Aucun numéro de PR trouvé dans le contexte.');
+              return;
+            }
+
+            const marker = '<!-- coding-stuff:pr-review-fetcher:summary -->';
+            const count = process.env.COMMENTS_COUNT || '0';
+            let body = `${marker}\n### 🔍 Synthèse des Revues de Code\n\n`;
+
+            if (fs.existsSync('pr-reviews.xml')) {
+              const xml = fs.readFileSync('pr-reviews.xml', 'utf8');
+              const p0 = (xml.match(/<severity>P0<\/severity>/g) || []).length;
+              const p1 = (xml.match(/<severity>P1<\/severity>/g) || []).length;
+              const p2 = (xml.match(/<severity>P2<\/severity>/g) || []).length;
+              const p3 = (xml.match(/<severity>P3<\/severity>/g) || []).length;
+
+              body += `| Sévérité | Nombre | Description |\n`;
+              body += `|:---|:---:|:---|\n`;
+              body += `| 🔴 **P0 (Bloquant)** | ${p0} | Faille bloquante ou incident critique |\n`;
+              body += `| 🟠 **P1 (Critique)** | ${p1} | Problème de sécurité ou defect majeur |\n`;
+              body += `| 🟡 **P2 (Important)** | ${p2} | Logique incorrecte ou cas limite |\n`;
+              body += `| ⚪ **P3 (Mineur)** | ${p3} | Style, maintenabilité ou suggestion |\n\n`;
+              body += `**Total commentaires actifs :** ${count}\n\n`;
+
+              if (parseInt(count, 10) > 0) {
+                body += `> [!TIP]\n> Pour lancer la correction automatique des retours éligibles par Gemini, commentez \`/fix-reviews\` sur cette PR.\n`;
+              } else {
+                body += `> [!NOTE]\n> Tous les commentaires de revue sont résolus ou archivés.\n`;
+              }
+            } else {
+              body += `Rapport non disponible.\n`;
+            }
+
+            // Chercher si le commentaire existe déjà pour le mettre à jour (éviter le spam)
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+
+            const existing = comments.data.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: body,
+              });
+              console.log('Commentaire de synthèse mis à jour.');
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: body,
+              });
+              console.log('Nouveau commentaire de synthèse publié.');
+            }
+
+      - name: Archiver le rapport XML
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pr-reviews-xml
+          path: pr-reviews.xml
+          retention-days: 7
+
+  fix:
+    name: Résolution Assistée par Gemini (Niveau 2)
+    if: inputs.enable_fix_command && ((github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '/fix-reviews')) || (github.event_name == 'workflow_dispatch' && inputs.mode == 'fix'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Vérifier les autorisations de l'auteur de la commande
+        id: auth_check
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            if (context.eventName === 'workflow_dispatch') return;
+            const assoc = context.payload.comment.author_association;
+            const allowed = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+            if (!allowed.includes(assoc)) {
+              core.setFailed(`Utilisateur non autorisé (${assoc}). Seuls les membres et collaborateurs peuvent déclencher /fix-reviews.`);
+            }
+
+      - name: Réagir au commentaire de commande
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            try {
+              await github.rest.reactions.createForIssueComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: context.payload.comment.id,
+                content: 'eyes',
+              });
+            } catch (e) {
+              console.log('Réaction non bloquante :', e.message);
+            }
+
+      - name: Récupérer les informations de la branche PR
+        id: pr_info
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const prNumber = context.payload.issue ? context.payload.issue.number : context.payload.pull_request.number;
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            core.setOutput('branch', pr.data.head.ref);
+            core.setOutput('repo', pr.data.head.repo.full_name);
+            core.setOutput('pr_number', prNumber);
+
+      - name: Checkout de la branche PR
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pr_info.outputs.branch }}
+          fetch-depth: 0
+
+      - name: Extraire les retours de revue avec pr-review-fetcher
+        id: fetcher
+        uses: instructeur22/pr-review-fetcher@main
+        with:
+          pr-number: ${{ steps.pr_info.outputs.pr_number }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          format: agent
+          output-path: pr-reviews.xml
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Exécuter la résolution Gemini
+        id: gemini_resolve
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ inputs.gemini_model }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GEMINI_API_KEY:-}" ]; then
+            echo "::error::Secret GEMINI_API_KEY non configuré dans ce dépôt."
+            exit 1
+          fi
+
+          # Installer dépendances minimales du resolver si besoin
+          # Exécuter le resolver avec pr-reviews.xml
+          bun run "${{ github.action_path }}/src/gemini-resolver.ts" \
+            --xml pr-reviews.xml \
+            --instructions "${{ github.action_path }}/GEMINI.md" \
+            --output-summary fix-summary.md \
+            --model "${GEMINI_MODEL}"
+
+      - name: Validation locale (tests optionnels si présents)
+        run: |
+          if [ -f "package.json" ] && grep -q '"test"' package.json; then
+            echo "Exécution des tests frontend / npm..."
+            npm test --if-present || true
+          fi
+          if [ -f "pytest.ini" ] || [ -f "setup.cfg" ] || [ -d "tests" ]; then
+            if command -v pytest >/dev/null 2>&1; then
+              echo "Exécution des tests pytest..."
+              pytest -q || true
+            fi
+          fi
+
+      - name: Commiter et pousser les correctifs
+        id: git_push
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "fix(review): resolve CodeRabbit & Greptile review comments"
+            git push origin HEAD:${{ steps.pr_info.outputs.branch }}
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Aucune modification de fichier à commiter."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publier le compte-rendu sur la PR
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR_NUMBER: ${{ steps.pr_info.outputs.pr_number }}
+          HAS_CHANGES: ${{ steps.git_push.outputs.has_changes }}
+        with:
+          script: |
+            const fs = require('fs');
+            const prNumber = parseInt(process.env.PR_NUMBER, 10);
+            let summary = '';
+            if (fs.existsSync('fix-summary.md')) {
+              summary = fs.readFileSync('fix-summary.md', 'utf8');
+            } else {
+              summary = '### 🤖 Résolution terminée\nAucun retour exploitable ou modifications déjà à jour.';
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: summary,
+            });

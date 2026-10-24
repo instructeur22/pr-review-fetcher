@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag de release (ex: v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build Multi-Arch Binaries & Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Compile multi-platform binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          echo "Compiling Linux x64..."
+          bun build --compile --minify ./src/index.ts --outfile dist/pr-review-fetcher-linux-x64
+
+          echo "Compiling Windows x64..."
+          bun build --compile --minify --target=bun-windows-x64 ./src/index.ts --outfile dist/pr-review-fetcher-windows-x64.exe
+
+          echo "Compiling Darwin arm64 (Apple Silicon)..."
+          bun build --compile --minify --target=bun-darwin-arm64 ./src/index.ts --outfile dist/pr-review-fetcher-darwin-arm64
+
+          echo "Compiling Darwin x64 (Intel Mac)..."
+          bun build --compile --minify --target=bun-darwin-x64 ./src/index.ts --outfile dist/pr-review-fetcher-darwin-x64
+
+          cd dist
+          sha256sum * > SHA256SUMS
+          cd ..
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          name: Release ${{ github.event.inputs.tag_name || github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/pr-review-fetcher-linux-x64
+            dist/pr-review-fetcher-windows-x64.exe
+            dist/pr-review-fetcher-darwin-arm64
+            dist/pr-review-fetcher-darwin-x64
+            dist/SHA256SUMS

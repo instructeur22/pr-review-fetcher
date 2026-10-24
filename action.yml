@@ -1,0 +1,88 @@
+name: 'PR Review Fetcher'
+description: 'Extract and structure GitHub PR reviews from Greptile, CodeRabbit, and DeepSource into agent-ready XML or summaries'
+author: 'instructeur22'
+branding:
+  icon: 'check-circle'
+  color: 'purple'
+
+inputs:
+  pr-number:
+    description: 'Pull Request number or full URL. Defaults to current PR context.'
+    required: false
+    default: ''
+  token:
+    description: 'GitHub token for GitHub API authentication.'
+    required: false
+    default: ${{ github.token }}
+  format:
+    description: 'Output format: agent (XML), json, or terminal.'
+    required: false
+    default: 'agent'
+  output-path:
+    description: 'Path of the file to save output.'
+    required: false
+    default: 'pr-reviews.xml'
+
+outputs:
+  output-file:
+    description: 'Absolute or relative path to the generated review file'
+    value: ${{ steps.fetch.outputs.output-file }}
+  comments-count:
+    description: 'Total number of review comments parsed'
+    value: ${{ steps.fetch.outputs.comments-count }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Bun runtime
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version: latest
+
+    - name: Run pr-review-fetcher
+      id: fetch
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+
+        PR_TARGET="${{ inputs.pr-number }}"
+        if [ -z "$PR_TARGET" ]; then
+          # Tenter de résoudre depuis le contexte github event
+          if [ -n "${{ github.event.pull_request.number }}" ]; then
+            PR_TARGET="${{ github.event.pull_request.number }}"
+          elif [ -n "${{ github.event.issue.number }}" ]; then
+            PR_TARGET="${{ github.event.issue.number }}"
+          else
+            echo "::error::Aucun numéro de Pull Request fourni ou détecté dans le contexte." >&2
+            exit 1
+          fi
+        fi
+
+        OUT_FILE="${{ inputs.output-path }}"
+        FORMAT="${{ inputs.format }}"
+        FLAG="--agent"
+        if [ "$FORMAT" = "json" ]; then
+          FLAG="--json"
+        elif [ "$FORMAT" = "terminal" ]; then
+          FLAG=""
+        fi
+
+        echo "Fetching reviews for target: ${PR_TARGET} (format: ${FORMAT})..."
+        bun run "${{ github.action_path }}/src/index.ts" "$PR_TARGET" $FLAG -o "$OUT_FILE"
+
+        echo "output-file=${OUT_FILE}" >> "$GITHUB_OUTPUT"
+
+        # Extraire le total_comments si XML ou JSON
+        COUNT="0"
+        if [ -f "$OUT_FILE" ]; then
+          if [ "$FORMAT" = "agent" ]; then
+            COUNT=$(grep -o '<total_comments>[0-9]*</total_comments>' "$OUT_FILE" | sed 's/[^0-9]//g' || echo "0")
+          elif [ "$FORMAT" = "json" ]; then
+            COUNT=$(jq -r '.totalComments // 0' "$OUT_FILE" 2>/dev/null || echo "0")
+          fi
+        fi
+        echo "comments-count=${COUNT:-0}" >> "$GITHUB_OUTPUT"
+        echo "Extracted ${COUNT:-0} review comments."
