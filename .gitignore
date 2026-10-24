@@ -1,0 +1,16 @@
+# Dépendances
+node_modules/
+
+# Binaires compilés autonomes
+pr-review-fetcher
+pr-review-fetcher.exe
+*.exe
+
+# Environnement et logs
+*.log
+.env
+.env.local
+
+# Système
+.DS_Store
+Thumbs.db

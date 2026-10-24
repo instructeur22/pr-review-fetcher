@@ -1,0 +1,34 @@
+# yaml-language-server: =https://coderabbit.ai/integrations/schema.v2.json
+language: "fr-FR"
+tone_instructions: "Sois concis, pragmatique et constructif. Rédige toutes tes analyses, résumés et remarques en français. Concentre-toi sur la sécurité, la robustesse, les performances et la maintenabilité du code."
+
+early_access: false
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "main"
+      - "master"
+  path_filters:
+    - "!**/node_modules/**"
+    - "!**/vendor/**"
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!**/public/build/**"
+    - "!**/storage/**"
+    - "!**/*.lock"
+    - "!**/package-lock.json"
+    - "!**/composer.lock"
+    - "!**/pnpm-lock.yaml"
+    - "!**/yarn.lock"
+
+chat:
+  auto_reply: true

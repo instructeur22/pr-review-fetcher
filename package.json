@@ -1,0 +1,16 @@
+{
+  "name": "pr-review-fetcher",
+  "version": "1.0.0",
+  "description": "Standalone CLI tool to fetch PR review comments, suggestions and Greptile/CodeRabbit reviews",
+  "main": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "build": "bun build --compile --minify ./src/index.ts --outfile pr-review-fetcher",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.1",
+    "typescript": "^5.8.0"
+  }
+}
